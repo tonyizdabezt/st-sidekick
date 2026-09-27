@@ -1,0 +1,13 @@
+# Development
+*.log
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Desktop.ini

@@ -1,0 +1,12 @@
+{
+    "display_name": "Sidekick",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "tonyizdabezt",
+    "version": "1.0.0",
+    "homePage": "https://github.com/tonyizdabezt/st-sidekick",
+    "description": "An out-of-character assistant that reads your roleplay and chats with you about it."
+}
