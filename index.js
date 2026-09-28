@@ -317,16 +317,49 @@ async function buildContext() {
     }
 
     if (settings.include.chat) {
-        const lines = [];
-        c.chat.forEach((m, i) => {
-            if (m.is_system && !settings.includeHidden) return;
-            lines.push(`#${i} ${m.name}: ${m.mes}`);
+        const shown = getShownChat().map(({ m, i }) => {
+            const pics = getMessageImages(m).map(p => `\n[Image: ${p.title || 'untitled'}]`).join('');
+            return `#${i} ${m.name}: ${m.mes}${pics}`;
         });
-        const depth = Number(settings.historyDepth);
-        const shown = depth > 0 ? lines.slice(-depth) : lines;
         if (shown.length) parts.push(`[Roleplay chat log]\n${shown.join('\n\n')}`);
     }
     return parts.join('\n\n');
+}
+
+function getShownChat() {
+    const shown = ctx().chat.map((m, i) => ({ m, i })).filter(({ m }) => !m.is_system || settings.includeHidden);
+    const depth = Number(settings.historyDepth);
+    return depth > 0 ? shown.slice(-depth) : shown;
+}
+
+function getMessageImages(m) {
+    const media = m.extra?.media;
+    if (!Array.isArray(media) || !media.length) return [];
+    const c = ctx();
+    const picked = c.getMediaDisplay(m) === 'gallery' ? [media[c.getMediaIndex(m)]] : media;
+    return picked.filter(p => p?.url && (!p.type || p.type === 'image'));
+}
+
+function getChatImages() {
+    if (!settings.include.chat) return [];
+    return getShownChat().flatMap(({ m, i }) => getMessageImages(m).map(p => ({ ...p, label: `#${i} ${m.name}` })));
+}
+
+async function chatImagesMessage() {
+    const pics = getChatImages();
+    if (!pics.length) return null;
+    const detail = ctx().chatCompletionSettings.inline_image_quality || 'auto';
+    const parts = [{ type: 'text', text: '[Images attached to messages in the roleplay chat]' }];
+    for (const p of pics) {
+        parts.push({ type: 'text', text: `${p.label}${p.title ? ` (${p.title})` : ''}:` });
+        try {
+            parts.push({ type: 'image_url', image_url: { url: await loadImageData(p.url), detail } });
+        } catch (err) {
+            console.warn('[Sidekick] could not load chat image', p.url, err);
+            parts.push({ type: 'text', text: '[Image could not be loaded]' });
+        }
+    }
+    return { role: 'user', content: parts };
 }
 
 async function buildMessages(session, images) {
@@ -336,6 +369,9 @@ async function buildMessages(session, images) {
     if (context) system += '\n\n' + context;
 
     const messages = [{ role: 'system', content: system }];
+    // ST's "Send inline media" toggle
+    const chatImages = images && c.chatCompletionSettings.media_inlining ? await chatImagesMessage() : null;
+    if (chatImages) messages.push(chatImages);
     for (const m of session.messages) {
         if (m.role === 'assistant' && !m.content) continue;
         messages.push({ role: m.role, content: m.attachments?.length ? await withAttachments(m.content, m.attachments, images) : m.content });
@@ -918,7 +954,7 @@ async function updateBaseEstimate() {
             context,
             history: historyTokens,
             base: context + historyTokens,
-            images: session.messages.reduce((n, m) => n + (m.attachments ?? []).filter(a => a.type === 'image').length, 0),
+            images: (ctx().chatCompletionSettings.media_inlining ? getChatImages().length : 0) + session.messages.reduce((n, m) => n + (m.attachments ?? []).filter(a => a.type === 'image').length, 0),
         });
         renderEstimate();
     } catch (err) {
@@ -1231,6 +1267,7 @@ function syncIncludeBoxes() {
     });
     $('#sidekick_hidden, #sidekick_menu_hidden').prop('checked', settings.includeHidden);
     $('#sidekick_menu_hidden').prop('disabled', !settings.include.chat);
+    $('#sidekick_depth, label[for="sidekick_depth"]').toggle(settings.include.chat);
     const values = Object.values(settings.include);
     const none = !values.some(Boolean);
     $('#sidekick_context_toggle').toggleClass('none', none)
