@@ -8,6 +8,8 @@ A SillyTavern extension that gives you an out-of-character assistant beside your
 - **Any connection profile**: pick one, or follow whichever profile you have selected
 - **You choose the context**: character card, persona, scenario, example dialogue, world info, SillyTavern's own prompts, and how many chat messages to include
 - **Editable system prompt**
+- **Presets**: save different setups and switch between them
+- **Temporary chats** that Sidekick never saves
 - **Streaming replies** with markdown and a collapsible thinking block
 - **Attachments**: paste, drop, or pick images and text files
 - **Conversation history per chat**: search, rename, fork, delete one or many
@@ -25,14 +27,17 @@ Sidekick needs the built-in **Connection Manager** extension turned on.
 
 ## Usage
 
-Click the astronaut icon to open the window, or pick **Open Sidekick** from the wand menu. The wand entry also moves the window back on screen if you lose it.
+Click the astronaut icon to open the window, or pick **Open Sidekick** from the wand menu. Sidekick starts minimized on every visit and remembers where you left the icon and the window.
 
 In the window:
 
 - Type a message and press Enter. Shift+Enter adds a line break.
 - The clock icon opens your conversations for the current chat.
 - The trash icon deletes the open conversation and takes you to your latest one.
+- The ghost icon starts a temporary chat. Sidekick drops it when you refresh or leave.
 - The pen icon starts a new conversation.
+- The name beside the paperclip switches presets.
+- The sliders icon beside the token count picks what goes into the prompt.
 - Hover a message to copy, edit, regenerate, fork, or delete it.
 
 ## Settings
@@ -41,6 +46,7 @@ Find them under **Extensions** → **Sidekick**.
 
 | Option | What it does |
 |--------|--------------|
+| **Preset** | Pick the active preset. Each preset keeps its own copy of every option below. |
 | **Connection profile** | Profile for replies. "Use current profile" follows your selection. |
 | **Max response tokens** | Reply length cap |
 | **Stream replies** | Show text as it arrives |

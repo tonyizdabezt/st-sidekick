@@ -58,6 +58,9 @@ const INCLUDE_LABELS = {
     chat: 'Chat history',
 };
 
+const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'historyDepth', 'include', 'includeHidden', 'systemPrompt', 'autoName', 'nameProfileId', 'nameModel', 'namePrompt'];
+const pickPreset = source => structuredClone(Object.fromEntries(PRESET_KEYS.map(key => [key, source[key]])));
+
 const ctx = () => SillyTavern.getContext();
 const isChatCompletionProfile = profile => ctx().CONNECT_API_MAP[profile?.api]?.selected === 'openai';
 let settings;
@@ -74,6 +77,7 @@ let view = 'chat';
 let historyQuery = '';
 let selecting = false;
 const selected = new Set();
+let temp = null;
 
 function loadSettings() {
     const all = ctx().extensionSettings;
@@ -85,9 +89,25 @@ function loadSettings() {
         all[MODULE].maxTokensBumped = true;
     }
     settings = all[MODULE];
+    // always start minimized
+    settings.collapsed = true;
+    if (!Array.isArray(settings.presets) || !settings.presets.length) {
+        settings.presets = [{ id: ctx().uuidv4(), name: 'Default', values: pickPreset(settings) }];
+    }
+    loadPresetValues(settings.presets.find(p => p.id === settings.presetId) ?? settings.presets[0]);
 }
 
+function loadPresetValues(preset) {
+    settings.presetId = preset.id;
+    Object.assign(settings, pickPreset(DEFAULTS), structuredClone(preset.values));
+    settings.include = { ...DEFAULTS.include, ...preset.values.include };
+}
+
+const activePreset = () => settings.presets.find(p => p.id === settings.presetId);
+
 const save = () => {
+    const preset = activePreset();
+    if (preset) preset.values = pickPreset(settings);
     ctx().saveSettingsDebounced();
     scheduleEstimate();
 };
@@ -115,6 +135,7 @@ function createSession(messages = []) {
 }
 
 function getActive() {
+    if (temp) return temp;
     const store = getStore();
     return store.sessions.find(s => s.id === store.activeId) ?? null;
 }
@@ -131,7 +152,23 @@ function sessionTitle(session) {
     return session.title || firstMessageTitle(session) || 'Untitled';
 }
 
+function leaveTemp() {
+    if (!temp) return;
+    if (live?.sessionId === temp.id) abortController?.abort();
+    temp = null;
+}
+
+function toggleTemp() {
+    if (temp) leaveTemp();
+    else temp = createSession();
+    editing = null;
+    view = 'chat';
+    renderAll();
+    $('#sidekick_input').trigger('focus');
+}
+
 function openSession(id) {
+    leaveTemp();
     getStore().activeId = id;
     editing = null;
     saveMeta();
@@ -141,6 +178,7 @@ function openSession(id) {
 }
 
 function newConversation() {
+    leaveTemp();
     getStore().activeId = null;
     editing = null;
     saveMeta();
@@ -585,7 +623,7 @@ async function generateReply(session, { restoreOnFail = false } = {}) {
             setLive(result?.content, result?.reasoning);
         }
         addReply();
-        if (settings.autoName && !session.title) generateTitle(session);
+        if (settings.autoName && !session.title && session !== temp) generateTitle(session);
     } catch (err) {
         if (live.content || live.reasoning) {
             addReply();
@@ -744,29 +782,25 @@ function renderAll() {
 
 function renderHeader() {
     const session = getActive();
-    $('#sidekick_title').text(sessionTitle(session)).attr('title', session ? 'Double-click to rename' : '');
+    $('#sidekick_title').text(temp ? 'Temporary chat' : sessionTitle(session)).attr('title', session && !temp ? 'Double-click to rename' : '');
+    $('#sidekick_temp').toggleClass('active', Boolean(temp)).attr({
+        'aria-pressed': String(Boolean(temp)),
+        title: temp ? 'Leave temporary chat' : 'Temporary chat',
+    });
     $('#sidekick_window').toggleClass('history_open', view === 'history');
     $('#sidekick_history_toggle').toggleClass('active', view === 'history')
         .attr('title', view === 'history' ? 'Back to conversation' : 'Conversations');
     // nothing to delete in an unsaved conversation
-    $('#sidekick_delete').toggleClass('disabled', !session || Boolean(abortController))
-        .attr('aria-disabled', String(!session || Boolean(abortController)));
+    const noDelete = !session || Boolean(temp) || Boolean(abortController);
+    $('#sidekick_delete').toggleClass('disabled', noDelete).attr('aria-disabled', String(noDelete));
 }
 
-const SUGGESTIONS = [
-    'Summarize the story so far',
-    'Spot any plot holes or contradictions',
-    'Give me ideas for the next scene',
-];
-
 function renderWelcome() {
-    const chips = SUGGESTIONS.map(text => $('<button type="button" class="sidekick_suggestion">').text(text).on('click', () => {
-        $('#sidekick_input').val(text).trigger('input').trigger('focus');
-    }));
     return $('<div class="sidekick_welcome">').append(
-        $('<i class="fa-solid fa-user-astronaut sidekick_welcome_icon"></i>'),
-        $('<p>').text('Ask about the story, check a detail, or brainstorm what comes next.'),
-        $('<div class="sidekick_suggestions">').append(chips),
+        $('<i class="fa-solid sidekick_welcome_icon"></i>').addClass(temp ? 'fa-ghost' : 'fa-user-astronaut'),
+        $('<p>').text(temp
+            ? 'Sidekick won\'t save this conversation. You lose it when you leave.'
+            : 'Ask about the story, check a detail, or brainstorm what comes next.'),
     );
 }
 
@@ -1049,9 +1083,10 @@ function renderHistory() {
     for (const s of sessions) {
         const count = s.messages.length;
         const when = ctx().timestampToMoment(s.updated).fromNow();
+        const isActive = !temp && s.id === store.activeId;
         const row = $('<div class="sidekick_session" tabindex="0">')
-            .toggleClass('active', s.id === store.activeId)
-            .attr('aria-current', s.id === store.activeId ? 'true' : null);
+            .toggleClass('active', isActive)
+            .attr('aria-current', isActive ? 'true' : null);
 
         if (selecting) {
             const isPicked = selected.has(s.id);
@@ -1189,6 +1224,77 @@ function updateVisibility() {
     }
 }
 
+// the composer menu and the settings drawer edit the same settings
+function syncIncludeBoxes() {
+    $('[data-include]').each(function () {
+        this.checked = settings.include[this.dataset.include];
+    });
+    $('#sidekick_hidden, #sidekick_menu_hidden').prop('checked', settings.includeHidden);
+    $('#sidekick_menu_hidden').prop('disabled', !settings.include.chat);
+    const values = Object.values(settings.include);
+    const none = !values.some(Boolean);
+    $('#sidekick_context_toggle').toggleClass('none', none)
+        .attr('title', none ? 'Nothing from the roleplay is sent' : 'Choose what\'s sent');
+    $('#sidekick_context_all').text(values.every(Boolean) ? 'Turn all off' : 'Turn all on');
+}
+
+function setPopover(pop, open) {
+    pop.toggleClass('open', open);
+    pop.find('.sidekick_pop_toggle').toggleClass('active', open).attr('aria-expanded', String(open));
+    if (!open) return;
+    const menu = pop.find('.sidekick_pop_menu');
+    (menu.find('[aria-current="true"]')[0] ?? menu.find('input:enabled')[0] ?? menu.find('button')[0])?.focus();
+}
+
+function switchPreset(id) {
+    const preset = settings.presets.find(p => p.id === id);
+    if (!preset) return;
+    loadPresetValues(preset);
+    save();
+    fillSettingsUI();
+    renderPresets();
+    renderLog();
+}
+
+async function createPreset() {
+    const c = ctx();
+    const name = await c.callGenericPopup('Name the new preset. It starts with the current preset\'s settings.', c.POPUP_TYPE.INPUT, '');
+    if (typeof name !== 'string' || !name.trim()) return;
+    const preset = { id: c.uuidv4(), name: name.trim().slice(0, 60), values: pickPreset(settings) };
+    settings.presets.push(preset);
+    switchPreset(preset.id);
+}
+
+async function deletePreset() {
+    const preset = activePreset();
+    if (!preset || settings.presets.length < 2) return;
+    const c = ctx();
+    const what = $('<b>').text(preset.name).prop('outerHTML');
+    const ok = await c.callGenericPopup(`Delete the preset ${what}? This can't be undone.`, c.POPUP_TYPE.CONFIRM, '', { okButton: 'Delete' });
+    if (!ok) return;
+    settings.presets = settings.presets.filter(p => p !== preset);
+    switchPreset(settings.presets[0].id);
+}
+
+function renderPresets() {
+    const active = activePreset();
+    const single = settings.presets.length < 2;
+    $('#sidekick_preset').empty()
+        .append(settings.presets.map(p => $('<option>').val(p.id).text(p.name)))
+        .val(active.id);
+    $('#sidekick_preset_delete').toggleClass('disabled', single).attr('aria-disabled', String(single));
+    $('#sidekick_preset_toggle').attr('title', `Preset: ${active.name}`)
+        .find('.sidekick_preset_name').text(active.name);
+    $('#sidekick_preset_list').empty().append(settings.presets.map(p => $('<button type="button" class="sidekick_preset_item">')
+        .attr('aria-current', p === active ? 'true' : null)
+        .append($('<i class="fa-solid fa-check"></i>'), $('<span>').text(p.name))
+        .on('click', () => {
+            setPopover($('#sidekick_presets'), false);
+            $('#sidekick_preset_toggle').trigger('focus');
+            switchPreset(p.id);
+        })));
+}
+
 function setCollapsed(collapsed) {
     settings.collapsed = collapsed;
     save();
@@ -1203,6 +1309,7 @@ function createFloatingUI() {
                 <i id="sidekick_history_toggle" class="fa-solid fa-clock-rotate-left sidekick_nodrag" role="button" tabindex="0" title="Conversations"></i>
                 <span id="sidekick_title"></span>
                 <i id="sidekick_delete" class="fa-solid fa-trash-can sidekick_nodrag" role="button" tabindex="0" title="Delete conversation"></i>
+                <i id="sidekick_temp" class="fa-solid fa-ghost sidekick_nodrag" role="button" tabindex="0" aria-pressed="false" title="Temporary chat"></i>
                 <i id="sidekick_new" class="fa-solid fa-pen-to-square sidekick_nodrag" role="button" tabindex="0" title="New conversation"></i>
                 <i id="sidekick_collapse" class="fa-solid fa-minus sidekick_nodrag" role="button" tabindex="0" title="Collapse"></i>
             </div>
@@ -1214,9 +1321,32 @@ function createFloatingUI() {
                             <div id="sidekick_attachments"></div>
                             <textarea id="sidekick_input" rows="1" placeholder="Message Sidekick…" aria-label="Message Sidekick"></textarea>
                             <div id="sidekick_composer_bar">
-                                <i id="sidekick_attach" class="fa-solid fa-paperclip" role="button" tabindex="0" title="Attach images or text files"></i>
-                                <input id="sidekick_file" type="file" multiple hidden accept="image/*,text/*,.md,.json,.csv,.yaml,.yml,.log">
+                                <div id="sidekick_composer_left">
+                                    <i id="sidekick_attach" class="fa-solid fa-paperclip" role="button" tabindex="0" title="Attach images or text files"></i>
+                                    <input id="sidekick_file" type="file" multiple hidden accept="image/*,text/*,.md,.json,.csv,.yaml,.yml,.log">
+                                    <div id="sidekick_presets" class="sidekick_pop">
+                                        <button id="sidekick_preset_toggle" class="sidekick_pop_toggle" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="sidekick_preset_menu">
+                                            <span class="sidekick_preset_name"></span><i class="fa-solid fa-chevron-up"></i>
+                                        </button>
+                                        <div id="sidekick_preset_menu" class="sidekick_pop_menu" role="group" aria-labelledby="sidekick_preset_heading">
+                                            <div class="sidekick_pop_head"><span id="sidekick_preset_heading" class="sidekick_pop_heading">Preset</span></div>
+                                            <div id="sidekick_preset_list"></div>
+                                        </div>
+                                    </div>
+                                </div>
                                 <div id="sidekick_composer_right">
+                                    <div id="sidekick_context" class="sidekick_pop">
+                                        <i id="sidekick_context_toggle" class="fa-solid fa-sliders sidekick_pop_toggle" role="button" tabindex="0" title="Choose what's sent" aria-haspopup="true" aria-expanded="false" aria-controls="sidekick_context_menu"></i>
+                                        <div id="sidekick_context_menu" class="sidekick_pop_menu" role="group" aria-labelledby="sidekick_context_heading">
+                                            <div class="sidekick_pop_head">
+                                                <span id="sidekick_context_heading" class="sidekick_pop_heading">Include in prompt</span>
+                                                <button id="sidekick_context_all" type="button"></button>
+                                            </div>
+                                            ${Object.entries(INCLUDE_LABELS).map(([key, label]) => `
+                                            <label class="checkbox_label"><input type="checkbox" data-include="${key}"> ${label}</label>`).join('')}
+                                            <label class="checkbox_label sidekick_sub"><input id="sidekick_menu_hidden" type="checkbox"> Hidden messages</label>
+                                        </div>
+                                    </div>
                                     <span id="sidekick_tokens" class="sidekick_tokens"></span>
                                     <i id="sidekick_send" class="fa-solid fa-arrow-up" role="button" tabindex="0" title="Send"></i>
                                 </div>
@@ -1254,6 +1384,7 @@ function createFloatingUI() {
     onActivate('#sidekick_collapse', () => setCollapsed(true));
     onActivate('#sidekick_history_toggle', () => setView(view === 'history' ? 'chat' : 'history'));
     onActivate('#sidekick_new', newConversation);
+    onActivate('#sidekick_temp', toggleTemp);
     onActivate('#sidekick_delete', () => {
         const session = getActive();
         if (session && !abortController) deleteSessions([session]);
@@ -1270,10 +1401,37 @@ function createFloatingUI() {
         renderHistory();
     });
     onActivate('#sidekick_send', () => abortController ? abortController.abort() : send());
+    const togglePopover = sel => setPopover($(sel), !$(sel).hasClass('open'));
+    onActivate('#sidekick_context_toggle', () => togglePopover('#sidekick_context'));
+    $('#sidekick_preset_toggle').on('click', () => togglePopover('#sidekick_presets'));
+    $('#sidekick_context_menu').on('input', 'input', function () {
+        if (this.dataset.include) settings.include[this.dataset.include] = this.checked;
+        else settings.includeHidden = this.checked;
+        save();
+        syncIncludeBoxes();
+    });
+    $('#sidekick_context_all').on('click', () => {
+        const on = !Object.values(settings.include).every(Boolean);
+        for (const key of Object.keys(settings.include)) settings.include[key] = on;
+        save();
+        syncIncludeBoxes();
+    });
+    $('.sidekick_pop').on('keydown', function (e) {
+        if (e.key !== 'Escape' || !$(this).hasClass('open')) return;
+        e.stopPropagation();
+        setPopover($(this), false);
+        $(this).find('.sidekick_pop_toggle').trigger('focus');
+    });
+    $(document).on('pointerdown', (e) => {
+        $('.sidekick_pop.open').each((_, el) => {
+            if (!el.contains(e.target)) setPopover($(el), false);
+        });
+    });
+    syncIncludeBoxes();
 
     $('#sidekick_title').on('dblclick', function () {
         const session = getActive();
-        if (session) startRename(this, session);
+        if (session && !temp) startRename(this, session);
     });
     $('#sidekick_search').on('input', function () {
         historyQuery = this.value;
@@ -1338,12 +1496,18 @@ function createFloatingUI() {
         <div class="fa-solid fa-user-astronaut extensionsMenuExtensionButton"></div><span>Open Sidekick</span></div>`);
     wandItem.on('click', () => {
         settings.enabled = true;
-        settings.windowPos = { ...DEFAULTS.windowPos };
-        settings.iconPos = { ...DEFAULTS.iconPos };
         $('#sidekick_enabled').prop('checked', true);
         setCollapsed(false);
     });
     $('#extensionsMenu').append(wandItem);
+}
+
+// refill the drawer after a preset switch
+const settingsFillers = [];
+
+function fillSettingsUI() {
+    settingsFillers.forEach(fill => fill());
+    syncIncludeBoxes();
 }
 
 function createSettingsUI() {
@@ -1359,6 +1523,13 @@ function createSettingsUI() {
                 </div>
                 <div class="inline-drawer-content">
                     <label class="checkbox_label"><input id="sidekick_enabled" type="checkbox"> Show Sidekick</label>
+
+                    <label for="sidekick_preset">Preset</label>
+                    <div class="sidekick_preset_row">
+                        <select id="sidekick_preset" class="text_pole"></select>
+                        <i id="sidekick_preset_new" class="menu_button fa-solid fa-plus" role="button" tabindex="0" title="New preset" aria-label="New preset"></i>
+                        <i id="sidekick_preset_delete" class="menu_button fa-solid fa-trash-can" role="button" tabindex="0" title="Delete preset" aria-label="Delete preset"></i>
+                    </div>
 
                     <label for="sidekick_profile">Connection profile</label>
                     <select id="sidekick_profile" class="text_pole"></select>
@@ -1396,14 +1567,21 @@ function createSettingsUI() {
             </div>
         </div>`);
 
-    const bindCheck = (sel, key) => $(sel).prop('checked', settings[key]).on('input', function () {
-        settings[key] = this.checked;
-        save();
-    });
-    const bindValue = (sel, key, parse = String) => $(sel).val(settings[key]).on('input', function () {
-        settings[key] = parse(this.value);
-        save();
-    });
+    const bindCheck = (sel, key, after) => {
+        settingsFillers.push(() => $(sel).prop('checked', settings[key]));
+        $(sel).on('input', function () {
+            settings[key] = this.checked;
+            save();
+            after?.();
+        });
+    };
+    const bindValue = (sel, key, parse = String) => {
+        settingsFillers.push(() => $(sel).val(settings[key]));
+        $(sel).on('input', function () {
+            settings[key] = parse(this.value);
+            save();
+        });
+    };
 
     $('#sidekick_enabled').prop('checked', settings.enabled).on('input', function () {
         settings.enabled = this.checked;
@@ -1412,13 +1590,13 @@ function createSettingsUI() {
     });
     bindValue('#sidekick_max_tokens', 'maxTokens', Number);
     bindCheck('#sidekick_stream', 'stream');
-    $('#sidekick_show_thinking').prop('checked', settings.showThinking).on('input', function () {
-        settings.showThinking = this.checked;
-        save();
-        renderLog();
-    });
+    bindCheck('#sidekick_show_thinking', 'showThinking', renderLog);
     bindValue('#sidekick_depth', 'historyDepth', Number);
-    bindCheck('#sidekick_hidden', 'includeHidden');
+    $('#sidekick_hidden').on('input', function () {
+        settings.includeHidden = this.checked;
+        save();
+        syncIncludeBoxes();
+    });
     bindValue('#sidekick_system', 'systemPrompt');
     bindCheck('#sidekick_auto_name', 'autoName');
     bindValue('#sidekick_name_model', 'nameModel');
@@ -1426,9 +1604,10 @@ function createSettingsUI() {
 
     $('.sidekick_settings [data-include]').each(function () {
         const key = this.dataset.include;
-        $(this).prop('checked', settings.include[key]).on('input', () => {
+        $(this).on('input', () => {
             settings.include[key] = this.checked;
             save();
+            syncIncludeBoxes();
         });
     });
 
@@ -1443,7 +1622,13 @@ function createSettingsUI() {
         save();
     });
 
-    $('#sidekick_reset_system, #sidekick_reset_name').on('keydown', (e) => {
+    $('#sidekick_preset').on('change', function () {
+        switchPreset(this.value);
+    });
+    $('#sidekick_preset_new').on('click', createPreset);
+    $('#sidekick_preset_delete').on('click', deletePreset);
+
+    $('#sidekick_reset_system, #sidekick_reset_name, #sidekick_preset_new, #sidekick_preset_delete').on('keydown', (e) => {
         if (e.key === 'Enter') $(e.currentTarget).trigger('click');
     });
 
@@ -1458,20 +1643,27 @@ function createSettingsUI() {
             save();
         });
         $('#sidekick_name_profile option[value=""]').text('Same as chat profile').removeAttr('data-i18n');
+        settingsFillers.push(() => {
+            $('#sidekick_profile').val(settings.profileId);
+            $('#sidekick_name_profile').val(settings.nameProfileId);
+        });
     } catch (err) {
         $('#sidekick_profile, #sidekick_name_profile').replaceWith('<div class="sidekick_warn">Enable the Connection Manager extension to pick a profile.</div>');
     }
+    fillSettingsUI();
 }
 
 jQuery(() => {
     loadSettings();
     createSettingsUI();
     createFloatingUI();
+    renderPresets();
     updateVisibility();
 
     const { eventSource, eventTypes } = ctx();
     eventSource.on(eventTypes.CHAT_CHANGED, () => {
         abortController?.abort();
+        temp = null;
         historyQuery = '';
         editing = null;
         selecting = false;
