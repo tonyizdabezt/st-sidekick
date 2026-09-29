@@ -45,6 +45,8 @@ const DEFAULTS = {
     collapsed: true,
     windowPos: { x: 80, y: 80 },
     iconPos: { x: 20, y: 120 },
+    windowPosMobile: { x: 0, y: 60 },
+    iconPosMobile: { x: 10, y: 120 },
 };
 
 const INCLUDE_LABELS = {
@@ -1207,7 +1209,11 @@ function clamp(el, x, y) {
     return { x: Math.max(0, Math.min(x, maxX)), y: Math.max(0, Math.min(y, maxY)) };
 }
 
-function makeDraggable(el, handle, posKey, onClick) {
+// matches SillyTavern's own mobile layout breakpoint
+const mobileQuery = window.matchMedia('(max-width: 1000px)');
+const posKey = base => mobileQuery.matches ? `${base}Mobile` : base;
+
+function makeDraggable(el, handle, posBase, onClick) {
     handle.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || e.target.closest('.sidekick_nodrag')) return;
         const startX = e.clientX, startY = e.clientY;
@@ -1228,7 +1234,7 @@ function makeDraggable(el, handle, posKey, onClick) {
             handle.removeEventListener('pointerup', up);
             handle.removeEventListener('pointercancel', up);
             if (moved) {
-                settings[posKey] = { x: el.offsetLeft, y: el.offsetTop };
+                settings[posKey(posBase)] = { x: el.offsetLeft, y: el.offsetTop };
                 save();
             } else {
                 onClick?.();
@@ -1253,10 +1259,10 @@ function updateVisibility() {
     win.style.display = showWindow ? 'flex' : 'none';
     icon.style.display = settings.enabled && settings.collapsed ? 'flex' : 'none';
     if (showWindow) {
-        placeAt(win, settings.windowPos);
+        placeAt(win, settings[posKey('windowPos')]);
         renderAll();
     } else if (settings.enabled) {
-        placeAt(icon, settings.iconPos);
+        placeAt(icon, settings[posKey('iconPos')]);
     }
 }
 
