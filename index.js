@@ -1674,12 +1674,12 @@ function createSettingsUI() {
             settings.profileId = profile?.id ?? '';
             save();
         });
-        $('#sidekick_profile option[value=""]').text('Use current profile').removeAttr('data-i18n');
+        $('#sidekick_profile option[value=""]').text('Use current profile').attr('data-i18n', 'Use current profile');
         ctx().ConnectionManagerRequestService.handleDropdown('#sidekick_name_profile', settings.nameProfileId, (profile) => {
             settings.nameProfileId = profile?.id ?? '';
             save();
         });
-        $('#sidekick_name_profile option[value=""]').text('Same as chat profile').removeAttr('data-i18n');
+        $('#sidekick_name_profile option[value=""]').text('Same as chat profile').attr('data-i18n', 'Same as chat profile');
         settingsFillers.push(() => {
             $('#sidekick_profile').val(settings.profileId);
             $('#sidekick_name_profile').val(settings.nameProfileId);
