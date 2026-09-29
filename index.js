@@ -38,6 +38,7 @@ const DEFAULTS = {
     },
     includeHidden: false,
     systemPrompt: DEFAULT_SYSTEM_PROMPT,
+    macros: true,
     autoName: true,
     nameProfileId: '',
     nameModel: '',
@@ -61,7 +62,7 @@ const INCLUDE_LABELS = {
     chat: 'Chat history',
 };
 
-const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'historyDepth', 'include', 'includeHidden', 'systemPrompt', 'autoName', 'nameProfileId', 'nameModel', 'namePrompt'];
+const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'historyDepth', 'include', 'includeHidden', 'systemPrompt', 'macros', 'autoName', 'nameProfileId', 'nameModel', 'namePrompt'];
 const pickPreset = source => structuredClone(Object.fromEntries(PRESET_KEYS.map(key => [key, source[key]])));
 
 const ctx = () => SillyTavern.getContext();
@@ -377,7 +378,8 @@ async function buildMessages(session, images) {
     if (chatImages) messages.push(chatImages);
     for (const m of session.messages) {
         if (m.role === 'assistant' && !m.content) continue;
-        messages.push({ role: m.role, content: m.attachments?.length ? await withAttachments(m.content, m.attachments, images) : m.content });
+        const text = m.role === 'user' && settings.macros ? c.substituteParams(m.content) : m.content;
+        messages.push({ role: m.role, content: m.attachments?.length ? await withAttachments(text, m.attachments, images) : text });
     }
     return messages;
 }
@@ -1530,7 +1532,7 @@ function createFloatingUI() {
         updateSendState();
     });
     $('#sidekick_input').on('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && ctx().shouldSendOnEnter()) {
             e.preventDefault();
             send();
         }
@@ -1584,6 +1586,7 @@ function createSettingsUI() {
                     <input id="sidekick_max_tokens" type="number" class="text_pole" min="16" step="16">
                     <label class="checkbox_label"><input id="sidekick_stream" type="checkbox"> Stream replies</label>
                     <label class="checkbox_label"><input id="sidekick_show_thinking" type="checkbox"> Show thinking</label>
+                    <label class="checkbox_label"><input id="sidekick_macros" type="checkbox"> Replace macros like {{char}} in your messages</label>
 
                     <h4>What the sidekick can see</h4>
                     ${includeBoxes}
@@ -1592,23 +1595,31 @@ function createSettingsUI() {
                     <input id="sidekick_depth" type="number" class="text_pole" min="0">
 
                     <div class="sidekick_heading">
-                        <h4>System prompt</h4>
+                        <h4 class="flex-container alignItemsBaseline">
+                            <span>System prompt</span>
+                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="sidekick_system" role="button" tabindex="0" title="Expand the editor"></i>
+                        </h4>
                         <i id="sidekick_reset_system" class="menu_button fa-solid fa-rotate-left" role="button" tabindex="0" title="Reset to default"></i>
                     </div>
                     <textarea id="sidekick_system" class="text_pole textarea_compact" rows="6"></textarea>
 
                     <h4>Conversation names</h4>
-                    <label class="checkbox_label"><input id="sidekick_auto_name" type="checkbox"> Name new conversations after the first reply</label>
-                    <label for="sidekick_name_profile">Naming profile</label>
-                    <select id="sidekick_name_profile" class="text_pole"></select>
-                    <label for="sidekick_name_model">Naming model</label>
-                    <input id="sidekick_name_model" type="text" class="text_pole" placeholder="Profile's model" autocomplete="off">
-                    <small class="sidekick_hint">A small, fast model is recommended. Leave empty to use the profile's own model.</small>
-                    <div class="sidekick_heading">
-                        <label for="sidekick_name_prompt">Naming prompt</label>
-                        <i id="sidekick_reset_name" class="menu_button fa-solid fa-rotate-left" role="button" tabindex="0" title="Reset to default"></i>
+                    <label class="checkbox_label"><input id="sidekick_auto_name" type="checkbox"> Auto-name conversations</label>
+                    <div id="sidekick_naming_options">
+                        <label for="sidekick_name_profile">Naming profile</label>
+                        <select id="sidekick_name_profile" class="text_pole"></select>
+                        <label for="sidekick_name_model">Naming model</label>
+                        <input id="sidekick_name_model" type="text" class="text_pole" placeholder="Profile's model" autocomplete="off">
+                        <small class="sidekick_hint">A small, fast model is recommended. Leave empty to use the profile's own model.</small>
+                        <div class="sidekick_heading">
+                            <div class="flex-container alignItemsBaseline">
+                                <label for="sidekick_name_prompt">Naming prompt</label>
+                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="sidekick_name_prompt" role="button" tabindex="0" title="Expand the editor"></i>
+                            </div>
+                            <i id="sidekick_reset_name" class="menu_button fa-solid fa-rotate-left" role="button" tabindex="0" title="Reset to default"></i>
+                        </div>
+                        <textarea id="sidekick_name_prompt" class="text_pole textarea_compact" rows="3"></textarea>
                     </div>
-                    <textarea id="sidekick_name_prompt" class="text_pole textarea_compact" rows="3"></textarea>
                 </div>
             </div>
         </div>`);
@@ -1637,6 +1648,7 @@ function createSettingsUI() {
     bindValue('#sidekick_max_tokens', 'maxTokens', Number);
     bindCheck('#sidekick_stream', 'stream');
     bindCheck('#sidekick_show_thinking', 'showThinking', renderLog);
+    bindCheck('#sidekick_macros', 'macros');
     bindValue('#sidekick_depth', 'historyDepth', Number);
     $('#sidekick_hidden').on('input', function () {
         settings.includeHidden = this.checked;
@@ -1644,7 +1656,9 @@ function createSettingsUI() {
         syncIncludeBoxes();
     });
     bindValue('#sidekick_system', 'systemPrompt');
-    bindCheck('#sidekick_auto_name', 'autoName');
+    const syncNaming = () => $('#sidekick_naming_options').toggle(settings.autoName);
+    bindCheck('#sidekick_auto_name', 'autoName', syncNaming);
+    settingsFillers.push(syncNaming);
     bindValue('#sidekick_name_model', 'nameModel');
     bindValue('#sidekick_name_prompt', 'namePrompt');
 
@@ -1674,7 +1688,7 @@ function createSettingsUI() {
     $('#sidekick_preset_new').on('click', createPreset);
     $('#sidekick_preset_delete').on('click', deletePreset);
 
-    $('#sidekick_reset_system, #sidekick_reset_name, #sidekick_preset_new, #sidekick_preset_delete').on('keydown', (e) => {
+    $('#sidekick_reset_system, #sidekick_reset_name, #sidekick_preset_new, #sidekick_preset_delete, .sidekick_settings .editor_maximize').on('keydown', (e) => {
         if (e.key === 'Enter') $(e.currentTarget).trigger('click');
     });
 

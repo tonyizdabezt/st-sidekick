@@ -31,7 +31,7 @@ Click the astronaut icon to open the window, or pick **Open Sidekick** from the 
 
 In the window:
 
-- Type a message and press Enter. Shift+Enter adds a line break.
+- Type a message and press Enter. It follows SillyTavern's **Send on Enter** setting.
 - The clock icon opens your conversations for the current chat.
 - The trash icon deletes the open conversation and takes you to your latest one.
 - The ghost icon starts a temporary chat. Sidekick drops it when you refresh or leave.
@@ -51,9 +51,10 @@ Find them under **Extensions** → **Sidekick**.
 | **Max response tokens** | Reply length cap |
 | **Stream replies** | Show text as it arrives |
 | **Show thinking** | Show or hide thinking blocks |
+| **Replace macros** | Turn `{{char}}`, `{{user}}`, and other macros in your messages into their values before sending. |
 | **What the sidekick can see** | Pick which parts of the roleplay go into the prompt |
-| **System prompt** | Sidekick's instructions. `{{char}}` and `{{user}}` work here. |
-| **Conversation names** | Turn auto-naming on or off, and set its profile, model, and prompt |
+| **System prompt** | Sidekick's instructions. |
+| **Conversation names** | Turn auto-naming on or off, and set its profile, model, and prompt. |
 
 ## Notes
 
