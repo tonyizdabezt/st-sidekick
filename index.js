@@ -43,10 +43,11 @@ const DEFAULTS = {
     nameModel: '',
     namePrompt: DEFAULT_NAME_PROMPT,
     collapsed: true,
-    windowPos: { x: 80, y: 80 },
-    iconPos: { x: 20, y: 120 },
-    windowPosMobile: { x: 0, y: 60 },
-    iconPosMobile: { x: 10, y: 120 },
+    // put it in the bottom right corner by default
+    windowPos: null,
+    iconPos: null,
+    windowPosMobile: null,
+    iconPosMobile: null,
 };
 
 const INCLUDE_LABELS = {
@@ -1247,6 +1248,8 @@ function makeDraggable(el, handle, posBase, onClick) {
 }
 
 function placeAt(el, pos) {
+    const margin = 16;
+    pos ??= { x: window.innerWidth - el.offsetWidth - margin, y: window.innerHeight - el.offsetHeight - margin };
     const p = clamp(el, pos.x, pos.y);
     el.style.left = `${p.x}px`;
     el.style.top = `${p.y}px`;
