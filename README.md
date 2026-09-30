@@ -5,7 +5,7 @@ A SillyTavern extension that gives you an out-of-character assistant beside your
 ## Features
 
 - **Floating window**: drag it anywhere, resize it, or collapse it into a draggable icon
-- **Any connection profile**: pick one, or follow whichever profile you have selected
+- **Any connection**: pick a connection profile, or follow SillyTavern's current settings
 - **You choose the context**: character card, persona, scenario, example dialogue, world info, SillyTavern's own prompts, and how many chat messages to include
 - **Editable system prompt**
 - **Presets**: save different setups and switch between them
@@ -47,7 +47,7 @@ Find them under **Extensions** → **Sidekick**.
 | Option | What it does |
 |--------|--------------|
 | **Preset** | Pick the active preset. Each preset keeps its own copy of every option below. |
-| **Connection profile** | Profile for replies. "Use current profile" follows your selection. |
+| **Connection profile** | Profile for replies. "Use current API settings" sends with the API, model, and preset ST has right now. |
 | **Max response tokens** | Reply length cap |
 | **Stream replies** | Show text as it arrives |
 | **Show thinking** | Show or hide thinking blocks |

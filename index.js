@@ -1,5 +1,5 @@
 import { secret_state, SECRET_KEYS } from '../../../secrets.js';
-import { promptManager } from '../../../openai.js';
+import { createGenerationParameters, promptManager } from '../../../openai.js';
 import { copyText, getBase64Async, getFileExtension, saveBase64AsFile } from '../../../utils.js';
 import { DOMPurify, showdown, hljs } from '../../../../lib.js';
 
@@ -66,7 +66,9 @@ const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'histor
 const pickPreset = source => structuredClone(Object.fromEntries(PRESET_KEYS.map(key => [key, source[key]])));
 
 const ctx = () => SillyTavern.getContext();
-const isChatCompletionProfile = profile => ctx().CONNECT_API_MAP[profile?.api]?.selected === 'openai';
+const usesChatCompletion = profileId => profileId
+    ? ctx().CONNECT_API_MAP[ctx().ConnectionManagerRequestService.getProfile(profileId).api]?.selected === 'openai'
+    : ctx().mainApi === 'openai';
 let settings;
 let abortController = null;
 let live = null;
@@ -505,9 +507,52 @@ function renderMessageAttachments(attachments) {
     return wrap;
 }
 
-// empty profileId = follow whatever Connection Manager has selected
-function chatProfileId() {
-    return settings.profileId || ctx().extensionSettings.connectionManager?.selectedProfile;
+// extensions like Prompt Inspector can view and edit with this
+async function announcePrompt(prompt) {
+    const { eventSource, eventTypes } = ctx();
+    if (Array.isArray(prompt)) {
+        await eventSource.emit(eventTypes.CHAT_COMPLETION_PROMPT_READY, { chat: prompt, dryRun: false });
+        return prompt;
+    }
+    const data = { prompt, dryRun: false };
+    await eventSource.emit(eventTypes.GENERATE_AFTER_COMBINE_PROMPTS, data);
+    return data.prompt;
+}
+
+// send with SillyTavern's live API settings
+async function requestCompletion(profileId, messages, maxTokens, { stream = false, signal = null, model = '' } = {}) {
+    const c = ctx();
+    if (profileId) {
+        const svc = c.ConnectionManagerRequestService;
+        const overrides = getProviderOverrides(svc.getProfile(profileId));
+        if (model) overrides.model = model;
+        const prompt = await announcePrompt(svc.constructPrompt(messages, profileId));
+        return svc.sendRequest(profileId, prompt, maxTokens, { stream, signal }, overrides);
+    }
+    if (c.mainApi === 'openai') {
+        await announcePrompt(messages);
+        const oai = { ...c.chatCompletionSettings };
+        if (maxTokens) oai.openai_max_tokens = maxTokens;
+        const { generate_data } = await createGenerationParameters(oai, model || c.getChatCompletionModel(), 'quiet', messages);
+        return c.ChatCompletionService.sendRequest({ ...generate_data, stream }, true, signal);
+    }
+    if (c.mainApi === 'textgenerationwebui') {
+        const tc = c.TextCompletionService;
+        const instruct = c.powerUserSettings.instruct;
+        // an empty preset keeps the live sampler settings
+        const prompt = await announcePrompt(instruct.enabled
+            ? tc.constructPrompt(messages, instruct)
+            : messages.map(m => m.content).join('\n\n'));
+        const data = tc.presetToGeneratePayload({ genamt: maxTokens }, {}, tc.createRequestData({
+            stream,
+            prompt,
+            max_tokens: maxTokens,
+            model: model || undefined,
+            api_type: c.textCompletionSettings.type,
+        }));
+        return tc.processRequest(data, {}, true, signal);
+    }
+    throw new Error('Connect a Chat Completion or Text Completion API, or pick a connection profile.');
 }
 
 // pulls inline thinking out of the reply
@@ -553,11 +598,7 @@ function useFallbackTitle(session) {
 }
 
 async function generateTitle(session, manual = false) {
-    const profileId = settings.nameProfileId || chatProfileId();
-    if (!profileId || naming.has(session.id)) {
-        if (manual && !profileId) toastr.warning('No connection profile is selected.');
-        return;
-    }
+    if (naming.has(session.id)) return;
     const transcript = session.messages.slice(0, 6)
         .map(m => `${m.role === 'user' ? 'User' : 'Sidekick'}: ${m.content.slice(0, 600)}`)
         .join('\n\n');
@@ -566,14 +607,10 @@ async function generateTitle(session, manual = false) {
     naming.add(session.id);
     renderHistory();
     try {
-        const svc = ctx().ConnectionManagerRequestService;
-        const overrides = getProviderOverrides(svc.getProfile(profileId));
-        if (settings.nameModel.trim()) overrides.model = settings.nameModel.trim();
-        const prompt = svc.constructPrompt([
+        const result = await requestCompletion(settings.nameProfileId || settings.profileId, [
             { role: 'system', content: ctx().substituteParams(settings.namePrompt) },
             { role: 'user', content: transcript },
-        ], profileId);
-        const result = await svc.sendRequest(profileId, prompt, undefined, { stream: false }, overrides);
+        ], undefined, { model: settings.nameModel.trim() });
         const title = cleanTitle(result?.content);
         if (title && (manual || !session.title)) {
             session.title = title;
@@ -601,10 +638,6 @@ async function send() {
         toastr.info('Wait for the attachments to finish uploading.');
         return;
     }
-    if (!chatProfileId()) {
-        toastr.warning('No connection profile is selected.');
-        return;
-    }
 
     const store = getStore();
     let session = getActive();
@@ -624,12 +657,6 @@ async function send() {
 }
 
 async function generateReply(session, { restoreOnFail = false } = {}) {
-    const c = ctx();
-    const profileId = chatProfileId();
-    if (!profileId) {
-        toastr.warning('No connection profile is selected.');
-        return;
-    }
     const input = $('#sidekick_input');
     editing = null;
     live = { sessionId: session.id };
@@ -648,14 +675,12 @@ async function generateReply(session, { restoreOnFail = false } = {}) {
     };
 
     try {
-        const svc = c.ConnectionManagerRequestService;
-        const profile = svc.getProfile(profileId);
-        const overrides = getProviderOverrides(profile);
-        const prompt = svc.constructPrompt(await buildMessages(session, isChatCompletionProfile(profile)), profileId);
-        const result = await svc.sendRequest(profileId, prompt, Number(settings.maxTokens), {
+        const { profileId } = settings;
+        const messages = await buildMessages(session, usesChatCompletion(profileId));
+        const result = await requestCompletion(profileId, messages, Number(settings.maxTokens), {
             stream: settings.stream,
             signal: abortController.signal,
-        }, overrides);
+        });
         if (typeof result === 'function') {
             for await (const chunk of result()) {
                 setLive(chunk.text, chunk.state?.reasoning);
@@ -1697,7 +1722,7 @@ function createSettingsUI() {
             settings.profileId = profile?.id ?? '';
             save();
         });
-        $('#sidekick_profile option[value=""]').text('Use current profile').attr('data-i18n', 'Use current profile');
+        $('#sidekick_profile option[value=""]').text('Use current API settings').attr('data-i18n', 'Use current API settings');
         ctx().ConnectionManagerRequestService.handleDropdown('#sidekick_name_profile', settings.nameProfileId, (profile) => {
             settings.nameProfileId = profile?.id ?? '';
             save();
