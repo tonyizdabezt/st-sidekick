@@ -929,7 +929,7 @@ async function openReview(edits) {
     }
 
     render();
-    await c.callGenericPopup(body, c.POPUP_TYPE.DISPLAY, '', { wide: true, large: true, allowVerticalScrolling: true });
+    await c.callGenericPopup(body, c.POPUP_TYPE.TEXT, '', { okButton: 'Close', wide: true, large: true, allowVerticalScrolling: true });
 }
 
 /**
