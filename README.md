@@ -6,7 +6,7 @@ A SillyTavern extension that gives you an out-of-character assistant beside your
 
 - **Floating window**: drag it anywhere, resize it, or collapse it into a draggable icon
 - **Any connection**: pick a connection profile, or follow SillyTavern's current settings
-- **You choose the context**: character card, persona, scenario, example dialogue, world info, SillyTavern's own prompts, and how many chat messages to include
+- **You choose the context**: character card, persona, scenario, world info, SillyTavern's own prompts, and how many chat messages to include
 - **Editable system prompt**
 - **Presets**: save different setups and switch between them
 - **Temporary chats** that Sidekick never saves
@@ -16,7 +16,7 @@ A SillyTavern extension that gives you an out-of-character assistant beside your
 - **Automatic names**: a model of your choice titles each conversation by topic
 - **Message actions**: copy, edit, regenerate, fork, delete
 - **Token counts**: an estimate of the next request beside Send, and a count on every message
-- **Proposed edits**: Sidekick can suggest changes to chat messages and the character card. You see a diff and approve each change, or all at once
+- **Proposed edits**: Sidekick can suggest changes to chat messages, the character card, and SillyTavern's prompts. You see a diff and approve each change, or all at once
 
 ## Installation
 
@@ -53,10 +53,10 @@ Find them under **Extensions** → **Sidekick**.
 | **Stream replies** | Show text as it arrives |
 | **Show thinking** | Show or hide thinking blocks |
 | **Replace macros** | Turn `{{char}}`, `{{user}}`, and other macros in your messages into their values before sending. |
-| **Let Sidekick propose edits** | Add the edit instructions to the prompt and show proposals as diffs. While on, Sidekick sees the card's stored text with its macros. |
+| **Let Sidekick propose edits** | Add the edit instructions to the prompt and show proposals as diffs. While on, Sidekick sees the stored text of the card and SillyTavern prompts, with its macros. |
 | **What the sidekick can see** | Pick which parts of the roleplay go into the prompt |
 | **System prompt** | Sidekick's instructions. |
-| **Conversation names** | Turn auto-naming on or off, and set its profile, model, and prompt. |
+| **Conversation names** | Turn auto-naming on or off, and set its profile and model. |
 
 ## Notes
 

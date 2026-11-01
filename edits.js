@@ -2,7 +2,7 @@ const BLOCK = /<sidekick_edit\b([^>]*)>([\s\S]*?)<\/sidekick_edit>/gi;
 const UNFINISHED = /<sidekick_edit\b[\s\S]*$/i;
 const OLD = /<old>([\s\S]*?)<\/old>/i;
 const NEW = /<new>([\s\S]*)<\/new>/i;
-const CARD_FIELDS = ['description', 'personality', 'scenario', 'mes_example'];
+const CARD_FIELDS = ['description', 'personality', 'scenario'];
 
 const normalize = text => String(text ?? '').replace(/\r\n/g, '\n');
 const unwrap = text => text === undefined ? undefined : normalize(text).replace(/^\n|\n$/g, '');
@@ -12,6 +12,10 @@ function parseBlock(attrs, body) {
     const target = attr('target');
     const edit = { target, old: unwrap(body.match(OLD)?.[1]), new: unwrap(body.match(NEW)?.[1]) };
     if (edit.new === undefined) return { ...edit, error: 'The proposal has no new text.' };
+    if (target === 'prompt') {
+        const id = attr('id');
+        return id ? { ...edit, id } : { ...edit, error: 'The proposal doesn\'t say which prompt to change.' };
+    }
     if (target === 'message') {
         const id = attr('id') ?? '';
         if (!/^#?\d+$/.test(id)) return { ...edit, error: 'The proposal doesn\'t say which message to change.' };
@@ -29,6 +33,11 @@ export function splitEdits(reply) {
         })
         .replace(UNFINISHED, '');
     return { text: (edits.length ? text.replace(/```\w*\s*```/g, '') : text).trim(), edits };
+}
+
+export function formatEdit({ target, id, old, new: text }) {
+    const part = (name, value) => value === undefined ? '' : `<${name}>${value}</${name}>\n`;
+    return `<sidekick_edit target="${target}"${id === undefined ? '' : ` id="${id}"`}>\n${part('old', old)}${part('new', text)}</sidekick_edit>`;
 }
 
 export function replaceText(current, edit) {
