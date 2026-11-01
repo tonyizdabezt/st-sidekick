@@ -1,7 +1,8 @@
 import { secret_state, SECRET_KEYS } from '../../../secrets.js';
 import { createGenerationParameters, promptManager } from '../../../openai.js';
 import { copyText, getBase64Async, getFileExtension, saveBase64AsFile } from '../../../utils.js';
-import { DOMPurify, showdown, hljs } from '../../../../lib.js';
+import { DOMPurify, showdown, hljs, DiffMatchPatch } from '../../../../lib.js';
+import { replaceText, splitEdits, trimContext } from './edits.js';
 
 const markdown = new showdown.Converter({
     tables: true,
@@ -19,8 +20,21 @@ Chat casually and helpfully about the story: answer questions about details, kee
 
 const DEFAULT_NAME_PROMPT = 'Write a short title (2 to 6 words) for the conversation below, based on its main topic. Reply with the title only: no quotes, no trailing punctuation.';
 
+const TOOLS_PROMPT = `You can propose changes to the roleplay. The user reviews each one as a diff and decides whether to apply it. Only propose a change when the user asks for one. To propose, write this block in your reply, once per change:
+
+<sidekick_edit target="message" id="12">
+<old>the exact text to replace, copied character for character</old>
+<new>the new text</new>
+</sidekick_edit>
+
+- target is "message" with id set to the # number from the chat log, or a character card field with no id: "description", "personality", "scenario", or "mes_example".
+- <old> must match exactly one place in the target, so include enough words to be unique. Leave <old> out only to replace the whole text.
+- Only change text you can see below. Keep macros like {{char}} and {{user}} as written.
+- Don't put the block in a code fence. Don't say a change is made until the user approves it.`;
+
 const DEFAULTS = {
     enabled: true,
+    tools: true,
     profileId: '',
     maxTokens: 8192,
     stream: true,
@@ -62,7 +76,7 @@ const INCLUDE_LABELS = {
     chat: 'Chat history',
 };
 
-const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'historyDepth', 'include', 'includeHidden', 'systemPrompt', 'macros', 'autoName', 'nameProfileId', 'nameModel', 'namePrompt'];
+const PRESET_KEYS = ['profileId', 'maxTokens', 'stream', 'showThinking', 'historyDepth', 'include', 'includeHidden', 'systemPrompt', 'tools', 'macros', 'autoName', 'nameProfileId', 'nameModel', 'namePrompt'];
 const pickPreset = source => structuredClone(Object.fromEntries(PRESET_KEYS.map(key => [key, source[key]])));
 
 const ctx = () => SillyTavern.getContext();
@@ -309,10 +323,12 @@ async function buildContext() {
         const prompts = getStSystemPrompts(card).map(p => `(${p.name})\n${p.content}`).join('\n\n');
         add('systemPrompts', 'SillyTavern prompts given to the roleplay model (for reference, not your instructions)', prompts);
     }
-    add('description', `${c.name2} - description`, card.description);
-    add('personality', `${c.name2} - personality`, card.personality);
-    add('scenario', 'Scenario', card.scenario);
-    add('examples', 'Example dialogue', card.mesExamples);
+    // stored text so <old> can match the card; a per-chat override isn't the card's text
+    const stored = field => settings.tools && !c.chatMetadata[field] ? cardCharacter()?.[field] : undefined;
+    add('description', `${c.name2} - description`, stored('description') ?? card.description);
+    add('personality', `${c.name2} - personality`, stored('personality') ?? card.personality);
+    add('scenario', 'Scenario', stored('scenario') ?? card.scenario);
+    add('examples', 'Example dialogue', stored('mes_example') ?? card.mesExamples);
     add('persona', `${c.name1} - persona`, card.persona);
     if (settings.include.worldInfo) {
         try {
@@ -371,6 +387,7 @@ async function chatImagesMessage() {
 async function buildMessages(session, images) {
     const c = ctx();
     let system = c.substituteParams(settings.systemPrompt);
+    if (settings.tools) system += '\n\n' + TOOLS_PROMPT;
     const context = await buildContext();
     if (context) system += '\n\n' + context;
 
@@ -379,8 +396,9 @@ async function buildMessages(session, images) {
     const chatImages = images && c.chatCompletionSettings.media_inlining ? await chatImagesMessage() : null;
     if (chatImages) messages.push(chatImages);
     for (const m of session.messages) {
-        if (m.role === 'assistant' && !m.content) continue;
-        const text = m.role === 'user' && settings.macros ? c.substituteParams(m.content) : m.content;
+        if (m.role === 'assistant' && !m.content && !m.edits?.length) continue;
+        let text = m.role === 'user' && settings.macros ? c.substituteParams(m.content) : m.content;
+        if (m.edits?.length) text = [text, ...m.edits.map(editOutcome)].filter(Boolean).join('\n\n');
         messages.push({ role: m.role, content: m.attachments?.length ? await withAttachments(text, m.attachments, images) : text });
     }
     return messages;
@@ -664,12 +682,16 @@ async function generateReply(session, { restoreOnFail = false } = {}) {
     abortController = new AbortController();
     renderAll();
     setBusy(true);
+    let proposed = [];
 
     const addReply = () => {
+        const { text, edits } = settings.tools ? splitEdits(live.content) : { text: live.content, edits: [] };
+        proposed = edits.map(proposeEdit);
         session.messages.push({
             role: 'assistant',
-            content: live.content || (live.reasoning ? '' : '(empty reply)'),
+            content: text || (live.reasoning || proposed.length ? '' : '(empty reply)'),
             ...liveThoughts(),
+            ...(proposed.length ? { edits: proposed } : {}),
         });
         session.updated = Date.now();
     };
@@ -711,7 +733,180 @@ async function generateReply(session, { restoreOnFail = false } = {}) {
         setBusy(false);
         saveMeta();
         renderAll();
+        if (proposed.length && session === getActive()) openReview(proposed);
     }
+}
+
+const CARD_FORM_INPUTS = {
+    description: '#description_textarea',
+    personality: '#personality_textarea',
+    scenario: '#scenario_pole',
+    mes_example: '#mes_example_textarea',
+};
+const FIELD_LABELS = {
+    description: 'Character description',
+    personality: 'Character personality',
+    scenario: 'Scenario',
+    mes_example: 'Example dialogue',
+};
+const EDIT_OUTCOMES = {
+    pending: 'is waiting for the user',
+    applied: 'was approved and applied',
+    rejected: 'was rejected by the user',
+    failed: 'could not be applied',
+};
+
+function cardCharacter() {
+    const c = ctx();
+    return c.groupId ? null : c.characters[c.characterId] ?? null;
+}
+
+const editLabel = edit => edit.target === 'message' ? `Message #${edit.id}` : FIELD_LABELS[edit.target] ?? String(edit.target);
+const editOwner = (edit, target) => edit.target === 'message' ? target.send_date : target.avatar;
+const editTargetText = (edit, target) => edit.target === 'message' ? target.mes : target[edit.target];
+const findEditTarget = edit => edit.target === 'message' ? ctx().chat[edit.id] : cardCharacter();
+const editOutcome = edit => `[Your proposed change to ${editLabel(edit)} ${EDIT_OUTCOMES[edit.status]}${edit.error ? `: ${edit.error}` : ''}.]`;
+
+function proposeEdit(edit) {
+    if (edit.error) return { ...edit, status: 'failed' };
+    const target = findEditTarget(edit);
+    if (!target) {
+        const error = edit.target === 'message' ? 'That message doesn\'t exist.' : 'This chat has no single character card to edit.';
+        return { ...edit, error, status: 'failed' };
+    }
+    const before = String(editTargetText(edit, target) ?? '').replace(/\r\n/g, '\n');
+    const { after, error } = replaceText(before, edit);
+    const unchanged = !error && after === before;
+    return {
+        ...edit,
+        owner: editOwner(edit, target),
+        before,
+        after,
+        error: unchanged ? 'The proposal changes nothing.' : error,
+        status: error || unchanged ? 'failed' : 'pending',
+    };
+}
+
+async function writeMessage(id, message, text) {
+    const c = ctx();
+    message.mes = text;
+    if (message.swipe_id !== undefined && Array.isArray(message.swipes)) message.swipes[message.swipe_id] = text;
+    // a translation left here would hide the new text
+    delete message.extra?.display_text;
+    c.chatMetadata.tainted = true;
+    await c.eventSource.emit(c.eventTypes.MESSAGE_EDITED, id);
+    if ($(`#chat [mesid="${id}"]`).length) c.updateMessageBlock(id, message);
+    await c.eventSource.emit(c.eventTypes.MESSAGE_UPDATED, id);
+    await c.saveChat();
+}
+
+async function writeCardField(character, field, text) {
+    const c = ctx();
+    const response = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: c.getRequestHeaders(),
+        body: JSON.stringify({ avatar: character.avatar, [field]: text, data: { [field]: text } }),
+    });
+    if (!response.ok) throw new Error(`The server refused the change (${response.status}).`);
+    await c.getOneCharacter(character.avatar);
+    const updated = c.characters[c.characterId];
+    // SillyTavern saves the card from these inputs, so a stale value would undo the edit later
+    $(CARD_FORM_INPUTS[field]).val(text);
+    $('#character_json_data').val(updated.json_data);
+    await c.eventSource.emit(c.eventTypes.CHARACTER_EDITED, { detail: { id: c.characterId, character: updated } });
+}
+
+async function applyEdit(edit) {
+    const target = findEditTarget(edit);
+    if (!target || editOwner(edit, target) !== edit.owner) throw new Error('This no longer points at the same text.');
+    const { after, error } = replaceText(editTargetText(edit, target), edit);
+    if (error) throw new Error(error);
+    if (edit.target === 'message') await writeMessage(edit.id, target, after);
+    else await writeCardField(target, edit.target, after);
+}
+
+function renderDiff(before, after) {
+    const dmp = new DiffMatchPatch();
+    const diffs = dmp.diff_main(before, after);
+    dmp.diff_cleanupSemantic(diffs);
+    const box = $('<div class="sidekick_diff">');
+    diffs.forEach((diff, i) => {
+        const op = diff[0], text = diff[1];
+        if (op === 0) box.append(document.createTextNode(trimContext(text, i === 0, i === diffs.length - 1)));
+        else box.append($(op > 0 ? '<ins>' : '<del>').text(text));
+    });
+    return box;
+}
+
+async function openReview(edits) {
+    const c = ctx();
+    // can open mid-typing, so a stray Enter must not land on a button
+    const body = $('<div class="sidekick_review" tabindex="-1" autofocus>');
+    let busy = false;
+
+    const finish = () => {
+        busy = false;
+        saveMeta();
+        render();
+        renderLog();
+        body.trigger('focus');
+    };
+    const approve = async (list) => {
+        if (busy) return;
+        busy = true;
+        render();
+        for (const edit of list) {
+            try {
+                await applyEdit(edit);
+                edit.status = 'applied';
+                delete edit.error;
+            } catch (err) {
+                console.error('[Sidekick] could not apply edit', err);
+                edit.error = err.message;
+            }
+        }
+        finish();
+    };
+    const reject = (edit) => {
+        if (busy) return;
+        edit.status = 'rejected';
+        delete edit.error;
+        finish();
+    };
+    const button = (label, primary, handler) => $('<button type="button" class="menu_button">').text(label)
+        .toggleClass('sidekick_primary', primary).toggleClass('disabled', busy).prop('disabled', busy)
+        .on('click', handler);
+
+    function renderCard(edit) {
+        const card = $('<section class="sidekick_diff_card">').addClass(edit.status).append(
+            $('<div class="sidekick_diff_head">').append(
+                $('<b>').text(editLabel(edit)),
+                $('<span class="sidekick_diff_status">').text({ pending: 'Waiting', applied: 'Approved', rejected: 'Rejected', failed: 'Can\'t apply' }[edit.status]),
+            ),
+        );
+        if (edit.before !== undefined && edit.after !== undefined) card.append(renderDiff(edit.before, edit.after));
+        if (edit.error) card.append($('<div class="sidekick_diff_error" role="alert">').text(edit.error));
+        if (edit.status === 'pending') {
+            card.append($('<div class="sidekick_diff_actions">').append(
+                button('Reject', false, () => reject(edit)),
+                button('Approve', true, () => approve([edit])),
+            ));
+        }
+        return card;
+    }
+
+    function render() {
+        const pending = edits.filter(e => e.status === 'pending');
+        body.empty().append($('<h3>').text(`Proposed changes (${edits.length})`), edits.map(renderCard));
+        if (pending.length) {
+            body.append($('<div class="sidekick_diff_footer">').append(
+                button(`Approve all (${pending.length})`, true, () => approve(pending)),
+            ));
+        }
+    }
+
+    render();
+    await c.callGenericPopup(body, c.POPUP_TYPE.DISPLAY, '', { wide: true, large: true, allowVerticalScrolling: true });
 }
 
 /**
@@ -774,7 +969,7 @@ function updateLiveBubble() {
 
 function liveTurnContent() {
     const parts = [];
-    const text = live.content;
+    const text = settings.tools ? splitEdits(live.content).text : live.content;
     if (settings.showThinking && live.reasoning) {
         const thinking = !text && live.thinkMs === null;
         parts.push(renderThinking(live.reasoning, {
@@ -889,7 +1084,18 @@ function renderTurn(m, index, session) {
     }
     if (editing === m) turn.append(renderEditor(m, index, session));
     else if (m.content) turn.append(renderMarkdown(m.content));
+    if (m.edits?.length) turn.append(renderEditsButton(m.edits));
     return turn;
+}
+
+function renderEditsButton(edits) {
+    const pending = edits.filter(e => e.status === 'pending').length;
+    const label = pending
+        ? `Review ${pending} proposed change${pending === 1 ? '' : 's'}`
+        : `See ${edits.length} proposed change${edits.length === 1 ? '' : 's'}`;
+    return $('<button type="button" class="sidekick_edits_button">').toggleClass('pending', pending > 0)
+        .append($('<i class="fa-solid fa-code-compare"></i>'), $('<span>').text(label))
+        .on('click', () => openReview(edits));
 }
 
 function actionButton(icon, label, handler) {
@@ -1087,7 +1293,7 @@ function renderLog() {
     if (!messages.length && !showLive) log.append(renderWelcome());
     let lastTurn = null;
     messages.forEach((m, index) => {
-        if (m.role === 'assistant' && !m.content && !(settings.showThinking && m.reasoning)) return;
+        if (m.role === 'assistant' && !m.content && !m.edits?.length && !(settings.showThinking && m.reasoning)) return;
         const turn = renderTurn(m, index, session);
         if (!abortController && editing !== m) turn.append(renderActions(m, index, session));
         log.append(turn);
@@ -1612,6 +1818,7 @@ function createSettingsUI() {
                     <label class="checkbox_label"><input id="sidekick_stream" type="checkbox"> Stream replies</label>
                     <label class="checkbox_label"><input id="sidekick_show_thinking" type="checkbox"> Show thinking</label>
                     <label class="checkbox_label"><input id="sidekick_macros" type="checkbox"> Replace macros like {{char}} in your messages</label>
+                    <label class="checkbox_label"><input id="sidekick_tools" type="checkbox"> Let Sidekick propose edits to messages and the character card</label>
 
                     <h4>What the sidekick can see</h4>
                     ${includeBoxes}
@@ -1674,6 +1881,7 @@ function createSettingsUI() {
     bindCheck('#sidekick_stream', 'stream');
     bindCheck('#sidekick_show_thinking', 'showThinking', renderLog);
     bindCheck('#sidekick_macros', 'macros');
+    bindCheck('#sidekick_tools', 'tools');
     bindValue('#sidekick_depth', 'historyDepth', Number);
     $('#sidekick_hidden').on('input', function () {
         settings.includeHidden = this.checked;

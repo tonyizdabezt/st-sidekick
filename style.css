@@ -503,6 +503,120 @@
     background-color: color-mix(in srgb, var(--sk-accent) 22%, transparent);
 }
 
+/* ---------- proposed edits ---------- */
+
+.sidekick_edits_button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--sk-line);
+    border-radius: 8px;
+    background: none;
+    color: var(--sk-muted);
+    font: inherit;
+    font-size: 0.9em;
+    cursor: pointer;
+}
+
+.sidekick_edits_button:hover {
+    background-color: var(--sk-fill-strong);
+    color: var(--sk-fg);
+}
+
+.sidekick_edits_button.pending {
+    border-color: var(--sk-accent);
+    color: var(--sk-fg);
+}
+
+.sidekick_review {
+    --sk-diff-fill: color-mix(in srgb, var(--SmartThemeBodyColor) 6%, transparent);
+
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    text-align: left;
+}
+
+.sidekick_review:focus {
+    outline: none;
+}
+
+.sidekick_review h3 {
+    margin: 0;
+}
+
+.sidekick_diff_card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 10px;
+}
+
+.sidekick_diff_card.rejected .sidekick_diff,
+.sidekick_diff_card.failed .sidekick_diff {
+    opacity: 0.6;
+}
+
+.sidekick_diff_head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.sidekick_diff_status {
+    font-size: 0.85em;
+    opacity: 0.7;
+}
+
+.sidekick_diff {
+    padding: 8px 10px;
+    max-height: 50vh;
+    overflow-y: auto;
+    border-radius: 6px;
+    background-color: var(--sk-diff-fill);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.sidekick_diff ins {
+    background-color: color-mix(in srgb, #3fa45b 30%, transparent);
+    text-decoration: underline;
+}
+
+.sidekick_diff del {
+    background-color: color-mix(in srgb, #d0655a 30%, transparent);
+    text-decoration: line-through;
+}
+
+.sidekick_diff_error {
+    color: #d0655a;
+}
+
+.sidekick_diff_actions,
+.sidekick_diff_footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.sidekick_review .menu_button {
+    margin: 0;
+    width: auto;
+    white-space: nowrap;
+}
+
+.sidekick_diff_footer {
+    position: sticky;
+    bottom: 0;
+    padding-top: 8px;
+    background-color: var(--SmartThemeBlurTintColor);
+}
+
 /* ---------- welcome ---------- */
 
 .sidekick_welcome {
